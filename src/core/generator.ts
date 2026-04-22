@@ -10,18 +10,26 @@ import { replace, transformStyleStrToObject } from './utils'
 import { LOAD_EVENT } from './constants'
 import createSvgSprite from './sprite'
 
+// Track previous dts directories to clean up old files
+let previousDtsDirs: Set<string> = new Set()
+
+// Reset tracking state for testing
+export function resetDtsTracking() {
+  previousDtsDirs.clear()
+}
+
 export async function genSpriteAndDts(options: Options, isBuild: boolean) {
   const spriteInfo = await createSvgSprite(options, isBuild)
   if (!isBuild && options?.dts)
-    genDts(spriteInfo.symbolIds, options)
+    await genDts(spriteInfo.symbolIds, options)
 
   return spriteInfo
 }
 
-export async function genCode(options: Options, isDev = false) {
-  const spriteInfo = await genSpriteAndDts(options, !isDev)
+export async function genCode(options: Options, spriteInfo?: any, isDev = false) {
+  const info = spriteInfo || await genSpriteAndDts(options, !isDev)
   const { svgSpriteDomId } = options
-  const { symbolIds, sprite } = spriteInfo
+  const { symbolIds, sprite } = info
 
   const isDynamic = options.domInsertionStrategy === 'dynamic'
 
@@ -70,22 +78,49 @@ if (typeof window !== 'undefined') {
 `
 }
 
-export function genDts(symbolIds: Set<string>, options: Options) {
+export async function genDts(symbolIds: Set<string>, options: Options) {
   const isVue = isVueProject(options)
-  const dtsPath = path.resolve(options.dtsDir!, './svg-component.d.ts')
-  const globalDtsPath = path.resolve(options.dtsDir!, './svg-component-global.d.ts')
+  const currentDtsDir = options.dtsDir!
+  const dtsPath = path.resolve(currentDtsDir, './svg-component.d.ts')
+  const globalDtsPath = path.resolve(currentDtsDir, './svg-component-global.d.ts')
+
+  // Clean up old dts files from previous directories
+  const cleanupPromises: Promise<void>[] = []
+
+  for (const oldDtsDir of previousDtsDirs) {
+    if (oldDtsDir !== currentDtsDir) {
+      // Clean up old declaration files
+      const oldDtsPath = path.resolve(oldDtsDir, './svg-component.d.ts')
+      const oldGlobalDtsPath = path.resolve(oldDtsDir, './svg-component-global.d.ts')
+
+      cleanupPromises.push(
+        fs.unlink(oldDtsPath).catch(() => { /* Ignore if file doesn't exist */ })
+      )
+      cleanupPromises.push(
+        fs.unlink(oldGlobalDtsPath).catch(() => { /* Ignore if file doesn't exist */ })
+      )
+    }
+  }
+
+  // Wait for cleanup to complete
+  await Promise.all(cleanupPromises).catch(() => { /* Ignore cleanup errors */ })
+
+  // Add current directory to tracked directories
+  previousDtsDirs.add(currentDtsDir)
+
+  // Generate new dts files
   if (isVue) {
-    fs.writeFile(
+    await fs.writeFile(
       dtsPath,
       replace(dts, symbolIds, options.componentName!),
     )
-    fs.writeFile(
+    await fs.writeFile(
       globalDtsPath,
       replace(golbalDts, symbolIds, options.componentName!),
     )
   }
   else {
-    fs.writeFile(
+    await fs.writeFile(
       dtsPath,
       replace(reactDts, symbolIds, options.componentName!),
     )
